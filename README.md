@@ -1,0 +1,82 @@
+# ghostty-wallpapers
+
+Rotate Ghostty background images on macOS by updating a managed config overlay and scheduling the script with `launchd`.
+
+## Requirements
+
+- macOS
+- Ghostty
+- A directory of images (`png`, `jpg`, `jpeg`, `webp`, `gif`, `bmp`)
+
+## One-off usage
+
+```sh
+./ghostty-wallpaper.sh --wallpaper-dir ~/Pictures/Ghostty
+```
+
+Useful options:
+
+- `--mode sequential` cycles through sorted files in order.
+- `--mode random` picks a different wallpaper at random.
+- `--reload-method sigusr2` asks running Ghostty processes to reload their config with `SIGUSR2` (default).
+- `--reload-method none` updates Ghostty's config without trying to live-reload the app.
+- `--print-selection` prints the image path that was selected.
+
+The script:
+
+1. Chooses a wallpaper from the provided directory.
+2. Ensures your main Ghostty config includes a managed overlay file.
+3. Writes `background-image = ...` to that overlay file.
+4. If Ghostty is running, sends `SIGUSR2` so Ghostty reloads its configuration without GUI scripting.
+
+If you are on an older Ghostty build that does not support `SIGUSR2`, use `--reload-method applescript` as a fallback or `--reload-method none` to skip live reloads.
+
+If a portrait photo shows up sideways, the issue is usually EXIF orientation metadata in the image rather than this script's config output. Ghostty currently uses the file as-is, so phone photos may need to be re-saved/exported first so the pixel data is already upright; the script now prints a warning when it detects orientation metadata on the selected image.
+
+## Periodic rotation with launchd
+
+1. Generate a LaunchAgent plist for your machine:
+
+   ```sh
+   ./ghostty-wallpaper.sh \
+     --wallpaper-dir ~/Pictures/wallpapers \
+     --print-launchd-plist \
+     > ~/Library/LaunchAgents/net.tiibun.ghostty-wallpaper.plist
+   ```
+
+   Useful plist-generation options:
+   - `--launchd-label net.tiibun.ghostty-wallpaper`
+   - `--launchd-interval 900`
+   - `--launchd-log-file ~/Library/Logs/ghostty-wallpaper.log`
+   - `--mode random`
+   - `--reload-method none`
+
+2. Load the agent:
+
+   ```sh
+   launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/net.tiibun.ghostty-wallpaper.plist 2>/dev/null || true
+   launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/net.tiibun.ghostty-wallpaper.plist
+   ```
+
+3. Run it immediately without waiting for the next interval:
+
+   ```sh
+   launchctl kickstart -k gui/$(id -u)/net.tiibun.ghostty-wallpaper
+   ```
+
+## Managed files
+
+- Main Ghostty config: existing macOS config (`~/Library/Application Support/com.mitchellh.ghostty/config`) if present, otherwise XDG config (`~/.config/ghostty/config`)
+- Managed overlay: `~/.config/ghostty-wallpapers/wallpaper.conf`
+- Rotation state: `~/.config/ghostty-wallpapers/state`
+
+## Validation
+
+```sh
+bash -n ghostty-wallpaper.sh
+./ghostty-wallpaper.sh --help
+tmp_plist="$(mktemp -t ghostty-wallpaper.plist)" && \
+  ./ghostty-wallpaper.sh --wallpaper-dir ~/Pictures/Ghostty --print-launchd-plist > "$tmp_plist" && \
+  plutil -lint "$tmp_plist" && \
+  rm -f "$tmp_plist"
+```
