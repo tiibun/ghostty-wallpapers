@@ -10,8 +10,16 @@ Rotate Ghostty background images on macOS by updating a managed config overlay a
 
 ## One-off usage
 
+First run (required):
+
 ```sh
 ./ghostty-wallpaper.sh --wallpaper-dir ~/Pictures/Ghostty
+```
+
+Subsequent runs (wallpaper directory is now remembered):
+
+```sh
+./ghostty-wallpaper.sh
 ```
 
 Useful options:
@@ -35,7 +43,14 @@ If a portrait photo shows up sideways, the issue is usually EXIF orientation met
 
 ## Periodic rotation with launchd
 
+After the first run (when the wallpaper directory is saved), you can schedule automatic rotation.
+
 1. Generate a LaunchAgent plist for your machine:
+
+   ```sh
+   ./ghostty-wallpaper.sh --print-launchd-plist > ~/Library/LaunchAgents/net.tiibun.ghostty-wallpaper.plist
+   ```
+   Alternatively, to override the saved directory or other settings:
 
    ```sh
    ./ghostty-wallpaper.sh \
@@ -43,13 +58,6 @@ If a portrait photo shows up sideways, the issue is usually EXIF orientation met
      --print-launchd-plist \
      > ~/Library/LaunchAgents/net.tiibun.ghostty-wallpaper.plist
    ```
-
-   Useful plist-generation options:
-   - `--launchd-label net.tiibun.ghostty-wallpaper`
-   - `--launchd-interval 900`
-   - `--launchd-log-file ~/Library/Logs/ghostty-wallpaper.log`
-   - `--mode random`
-   - `--reload-method none`
 
 2. Load the agent:
 

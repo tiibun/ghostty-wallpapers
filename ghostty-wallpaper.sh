@@ -17,12 +17,12 @@ readonly DEFAULT_LAUNCHD_LOG_FILE="$HOME/Library/Logs/ghostty-wallpaper.log"
 
 usage() {
   cat <<EOF
-Usage: ${SCRIPT_NAME} --wallpaper-dir DIR [options]
+Usage: ${SCRIPT_NAME} [--wallpaper-dir DIR] [options]
 
 Rotate the Ghostty background image by updating a managed config overlay.
 
 Options:
-  --wallpaper-dir DIR       Directory containing wallpaper images (required)
+  --wallpaper-dir DIR       Directory containing wallpaper images (required on first run, or if not previously saved)
   --mode MODE              Rotation mode: sequential or random (default: sequential)
   --config-file PATH       Ghostty config file to update
   --overlay-file PATH      Managed overlay file to write (default: ${DEFAULT_OVERLAY_FILE})
@@ -213,22 +213,30 @@ load_wallpapers() {
   [[ "${#wallpapers[@]}" -gt 0 ]] || die "no supported images found in ${dir}"
 }
 
-read_last_index() {
+read_state() {
   if [[ ! -f "${state_file}" ]]; then
-    printf '%s\n' "-1"
     return
   fi
 
-  if ! last_index="$(awk -F= '$1 == "last_index" { print $2 }' "${state_file}" 2>/dev/null | tail -n 1)"; then
-    printf '%s\n' "-1"
-    return
-  fi
-
+  local last_index
+  local saved_wallpaper_dir
+  
+  last_index="$(awk -F= '$1 == "last_index" { print $2 }' "${state_file}" 2>/dev/null | tail -n 1)"
+  saved_wallpaper_dir="$(awk -F= '$1 == "wallpaper_dir" { print substr($0, index($0,$2)) }' "${state_file}" 2>/dev/null | tail -n 1)"
+  
   if [[ "${last_index}" =~ ^-?[0-9]+$ ]]; then
     printf '%s\n' "${last_index}"
   else
     printf '%s\n' "-1"
   fi
+}
+
+read_saved_wallpaper_dir() {
+  if [[ ! -f "${state_file}" ]]; then
+    return
+  fi
+
+  awk -F= '$1 == "wallpaper_dir" { print substr($0, index($0,$2)) }' "${state_file}" 2>/dev/null | tail -n 1
 }
 
 write_state() {
@@ -237,6 +245,7 @@ write_state() {
 
   mkdir -p "$(dirname "${state_file}")"
   cat > "${state_file}" <<EOF
+wallpaper_dir=${wallpaper_dir}
 last_index=${selected_index}
 last_wallpaper=${selected_path}
 EOF
@@ -265,7 +274,7 @@ pick_wallpaper() {
   local next_index
   local candidate
 
-  last_index="$(read_last_index)"
+  last_index="$(read_state)"
 
   case "${mode}" in
     sequential)
@@ -414,7 +423,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -n "${wallpaper_dir}" ]] || die "--wallpaper-dir is required"
+if [[ -z "${wallpaper_dir}" ]]; then
+  wallpaper_dir="$(read_saved_wallpaper_dir)"
+  [[ -n "${wallpaper_dir}" ]] || die "--wallpaper-dir is required or no saved wallpaper directory found"
+fi
+
 validate_mode
 validate_reload_method
 validate_launchd_interval
