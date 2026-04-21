@@ -11,6 +11,7 @@ readonly DEFAULT_MACOS_CONFIG_FILE="$HOME/Library/Application Support/com.mitche
 readonly DEFAULT_MANAGED_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/ghostty-wallpapers"
 readonly DEFAULT_OVERLAY_FILE="${DEFAULT_MANAGED_DIR}/wallpaper.conf"
 readonly DEFAULT_STATE_FILE="${DEFAULT_MANAGED_DIR}/state"
+readonly DEFAULT_CACHE_DIR="${DEFAULT_MANAGED_DIR}/cache"
 readonly DEFAULT_LAUNCHD_LABEL="net.tiibun.ghostty-wallpaper"
 readonly DEFAULT_LAUNCHD_INTERVAL="900"
 readonly DEFAULT_LAUNCHD_LOG_FILE="$HOME/Library/Logs/ghostty-wallpaper.log"
@@ -32,6 +33,8 @@ Options:
   --launchd-label LABEL    Label to use in the generated plist (default: ${DEFAULT_LAUNCHD_LABEL})
   --launchd-interval SEC   StartInterval to use in the generated plist (default: ${DEFAULT_LAUNCHD_INTERVAL})
   --launchd-log-file PATH  Log file path to use in the generated plist (default: ${DEFAULT_LAUNCHD_LOG_FILE})
+  --no-square-crop         Disable automatic square-cropping of portrait images
+  --cache-dir DIR          Directory for cached square-cropped images (default: ${DEFAULT_CACHE_DIR})
   --print-selection        Print the selected wallpaper path to stdout
   --help                   Show this help text
 EOF
@@ -268,6 +271,36 @@ warn_if_orientation_metadata_present() {
   printf 'Warning: selected image has EXIF orientation=%s; Ghostty may display it sideways. Re-save or export the image so the pixels are already upright.\n' "${orientation}" >&2
 }
 
+prepare_wallpaper() {
+  local image_path="$1"
+  local width height size offset_top src_hash src_base cache_file
+
+  width="$(sips -g pixelWidth "${image_path}" 2>/dev/null | awk -F': ' '/pixelWidth:/ { print $2; exit }')"
+  height="$(sips -g pixelHeight "${image_path}" 2>/dev/null | awk -F': ' '/pixelHeight:/ { print $2; exit }')"
+
+  if [[ -z "${width}" || -z "${height}" || "${height}" -le "${width}" ]]; then
+    return
+  fi
+
+  src_hash="$(printf '%s' "${image_path}" | md5)"
+  src_base="$(basename "${image_path}")"
+  cache_file="${cache_dir}/${src_hash}-${src_base}"
+
+  if [[ -f "${cache_file}" && "${cache_file}" -nt "${image_path}" ]]; then
+    selected_wallpaper="${cache_file}"
+    return
+  fi
+
+  mkdir -p "${cache_dir}"
+  size="${width}"
+  offset_top=$(( (height - width) / 2 ))
+
+  sips --cropToHeightWidth "${size}" "${size}" --cropOffset "${offset_top}" 0 \
+    "${image_path}" --out "${cache_file}" >/dev/null
+
+  selected_wallpaper="${cache_file}"
+}
+
 pick_wallpaper() {
   local count="${#wallpapers[@]}"
   local last_index
@@ -351,6 +384,8 @@ mode="sequential"
 config_file=""
 overlay_file="${DEFAULT_OVERLAY_FILE}"
 state_file="${DEFAULT_STATE_FILE}"
+cache_dir="${DEFAULT_CACHE_DIR}"
+square_crop=1
 reload_method="sigusr2"
 print_launchd_plist_mode=0
 launchd_label="${DEFAULT_LAUNCHD_LABEL}"
@@ -409,6 +444,15 @@ while [[ $# -gt 0 ]]; do
       launchd_log_file="$2"
       shift 2
       ;;
+    --no-square-crop)
+      square_crop=0
+      shift
+      ;;
+    --cache-dir)
+      [[ $# -ge 2 ]] || die "--cache-dir requires a value"
+      cache_dir="$2"
+      shift 2
+      ;;
     --print-selection)
       print_selection=1
       shift
@@ -447,6 +491,7 @@ selected_wallpaper=""
 load_wallpapers "${wallpaper_dir}"
 pick_wallpaper
 warn_if_orientation_metadata_present "${selected_wallpaper}"
+[[ "${square_crop}" -eq 1 ]] && prepare_wallpaper "${selected_wallpaper}"
 ensure_include_block "${config_file}" "${include_line}"
 write_overlay
 write_state "${selected_index}" "${selected_wallpaper}"
