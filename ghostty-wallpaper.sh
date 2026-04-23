@@ -216,6 +216,111 @@ load_wallpapers() {
   [[ "${#wallpapers[@]}" -gt 0 ]] || die "no supported images found in ${dir}"
 }
 
+read_image_dimensions() {
+  local image_path="$1"
+  local width height
+
+  width="$(sips -g pixelWidth "${image_path}" 2>/dev/null | awk -F': ' '/pixelWidth:/ { print $2; exit }')"
+  height="$(sips -g pixelHeight "${image_path}" 2>/dev/null | awk -F': ' '/pixelHeight:/ { print $2; exit }')"
+
+  [[ -n "${width}" && -n "${height}" ]] || die "failed to read image dimensions: ${image_path}"
+  printf '%s %s\n' "${width}" "${height}"
+}
+
+read_exif_orientation() {
+  local image_path="$1"
+  local file_output orientation_tag
+
+  file_output="$(file -b "${image_path}" 2>/dev/null || true)"
+  orientation_tag="$(printf '%s\n' "${file_output}" | sed -n 's/.*orientation=\([^],]*\).*/\1/p')"
+
+  case "${orientation_tag}" in
+    ""|upper-left)
+      printf '1\n'
+      ;;
+    "[*2*]")
+      printf '2\n'
+      ;;
+    lower-right)
+      printf '3\n'
+      ;;
+    "[*4*]")
+      printf '4\n'
+      ;;
+    "[*5*]")
+      printf '5\n'
+      ;;
+    upper-right)
+      printf '6\n'
+      ;;
+    "[*7*]")
+      printf '7\n'
+      ;;
+    lower-left)
+      printf '8\n'
+      ;;
+    *)
+      die "unsupported EXIF orientation metadata in ${image_path}: ${orientation_tag}"
+      ;;
+  esac
+}
+
+orientation_swaps_dimensions() {
+  local orientation="$1"
+
+  case "${orientation}" in
+    5|6|7|8)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+normalize_image_orientation() {
+  local input_path="$1"
+  local output_path="$2"
+  local orientation="$3"
+  local temp_path=""
+
+  case "${orientation}" in
+    1)
+      cp "${input_path}" "${output_path}"
+      ;;
+    2)
+      sips --flip horizontal -s format png "${input_path}" --out "${output_path}" >/dev/null
+      ;;
+    3)
+      sips --rotate 180 -s format png "${input_path}" --out "${output_path}" >/dev/null
+      ;;
+    4)
+      sips --flip vertical -s format png "${input_path}" --out "${output_path}" >/dev/null
+      ;;
+    5)
+      temp_path="${output_path}.tmp.png"
+      sips --flip horizontal -s format png "${input_path}" --out "${temp_path}" >/dev/null
+      sips --rotate 270 -s format png "${temp_path}" --out "${output_path}" >/dev/null
+      rm -f "${temp_path}"
+      ;;
+    6)
+      sips --rotate 90 -s format png "${input_path}" --out "${output_path}" >/dev/null
+      ;;
+    7)
+      temp_path="${output_path}.tmp.png"
+      sips --flip horizontal -s format png "${input_path}" --out "${temp_path}" >/dev/null
+      sips --rotate 90 -s format png "${temp_path}" --out "${output_path}" >/dev/null
+      rm -f "${temp_path}"
+      ;;
+    8)
+      sips --rotate 270 -s format png "${input_path}" --out "${output_path}" >/dev/null
+      ;;
+    *)
+      die "unsupported EXIF orientation: ${orientation}"
+      ;;
+  esac
+}
+
 read_state() {
   if [[ ! -f "${state_file}" ]]; then
     return
@@ -254,37 +359,47 @@ last_wallpaper=${selected_path}
 EOF
 }
 
-warn_if_orientation_metadata_present() {
-  local image_path="$1"
-  local orientation
-
-  if ! orientation="$(sips -g orientation "${image_path}" 2>/dev/null | awk -F': ' '/orientation:/ { print $2; exit }')"; then
-    return
-  fi
-
-  case "${orientation}" in
-    ""|"<nil>"|1)
-      return
-      ;;
-  esac
-
-  printf 'Warning: selected image has EXIF orientation=%s; Ghostty may display it sideways. Re-save or export the image so the pixels are already upright.\n' "${orientation}" >&2
-}
-
 prepare_wallpaper() {
   local image_path="$1"
-  local width height size offset_top src_hash src_base cache_file
+  local raw_width raw_height width height orientation size offset_top src_hash src_base src_name src_stem cache_file cache_variant
+  local working_path temp_normalized
 
-  width="$(sips -g pixelWidth "${image_path}" 2>/dev/null | awk -F': ' '/pixelWidth:/ { print $2; exit }')"
-  height="$(sips -g pixelHeight "${image_path}" 2>/dev/null | awk -F': ' '/pixelHeight:/ { print $2; exit }')"
+  read -r raw_width raw_height < <(read_image_dimensions "${image_path}")
+  orientation="$(read_exif_orientation "${image_path}")"
+  width="${raw_width}"
+  height="${raw_height}"
 
-  if [[ -z "${width}" || -z "${height}" || "${height}" -le "${width}" ]]; then
+  if orientation_swaps_dimensions "${orientation}"; then
+    width="${raw_height}"
+    height="${raw_width}"
+  fi
+
+  if [[ "${orientation}" -eq 1 && ( "${square_crop}" -eq 0 || "${height}" -le "${width}" ) ]]; then
     return
   fi
 
   src_hash="$(printf '%s' "${image_path}" | md5)"
   src_base="$(basename "${image_path}")"
-  cache_file="${cache_dir}/${src_hash}-${src_base}"
+  src_name="${src_base%.*}"
+  src_stem="${src_name}"
+
+  if [[ "${src_base}" == "${src_name}" ]]; then
+    src_stem="${src_base}"
+  fi
+
+  if [[ "${orientation}" -ne 1 ]]; then
+    cache_variant="normalized"
+
+    if [[ "${square_crop}" -eq 1 && "${height}" -gt "${width}" ]]; then
+      cache_variant="${cache_variant}-square"
+    else
+      cache_variant="${cache_variant}-full"
+    fi
+
+    cache_file="${cache_dir}/${src_hash}-${src_stem}-${cache_variant}.png"
+  else
+    cache_file="${cache_dir}/${src_hash}-${src_base}"
+  fi
 
   if [[ -f "${cache_file}" && "${cache_file}" -nt "${image_path}" ]]; then
     selected_wallpaper="${cache_file}"
@@ -292,11 +407,34 @@ prepare_wallpaper() {
   fi
 
   mkdir -p "${cache_dir}"
+  working_path="${image_path}"
+
+  if [[ "${orientation}" -ne 1 ]]; then
+    temp_normalized="${cache_dir}/.${src_hash}-normalized-${src_stem}.png"
+    rm -f "${temp_normalized}"
+    normalize_image_orientation "${image_path}" "${temp_normalized}" "${orientation}"
+    working_path="${temp_normalized}"
+  fi
+
+  if [[ "${square_crop}" -eq 0 || "${height}" -le "${width}" ]]; then
+    if [[ "${working_path}" == "${image_path}" ]]; then
+      cp "${working_path}" "${cache_file}"
+    else
+      mv "${working_path}" "${cache_file}"
+    fi
+    selected_wallpaper="${cache_file}"
+    return
+  fi
+
   size="${width}"
   offset_top=$(( (height - width) / 2 ))
 
   sips --cropToHeightWidth "${size}" "${size}" --cropOffset "${offset_top}" 0 \
-    "${image_path}" --out "${cache_file}" >/dev/null
+    "${working_path}" --out "${cache_file}" >/dev/null
+
+  if [[ "${working_path}" != "${image_path}" ]]; then
+    rm -f "${working_path}"
+  fi
 
   selected_wallpaper="${cache_file}"
 }
@@ -490,8 +628,7 @@ selected_wallpaper=""
 
 load_wallpapers "${wallpaper_dir}"
 pick_wallpaper
-warn_if_orientation_metadata_present "${selected_wallpaper}"
-[[ "${square_crop}" -eq 1 ]] && prepare_wallpaper "${selected_wallpaper}"
+prepare_wallpaper "${selected_wallpaper}"
 ensure_include_block "${config_file}" "${include_line}"
 write_overlay
 write_state "${selected_index}" "${selected_wallpaper}"

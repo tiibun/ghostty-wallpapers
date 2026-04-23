@@ -39,7 +39,7 @@ The script:
 
 If you are on an older Ghostty build that does not support `SIGUSR2`, use `--reload-method applescript` as a fallback or `--reload-method none` to skip live reloads.
 
-If a portrait photo shows up sideways, the issue is usually EXIF orientation metadata in the image rather than this script's config output. Ghostty currently uses the file as-is, so phone photos may need to be re-saved/exported first so the pixel data is already upright; the script now prints a warning when it detects orientation metadata on the selected image.
+If a photo relies on EXIF orientation metadata (common for camera and phone portraits), the script writes a managed cache file with the pixels rotated for Ghostty before any optional square crop. This keeps portrait photos upright even when Ghostty ignores the embedded orientation flag, including when `--no-square-crop` is used.
 
 ## Periodic rotation with launchd
 
@@ -81,6 +81,7 @@ After the first run (when the wallpaper directory is saved), you can schedule au
 ## Validation
 
 ```sh
+bash test-ghostty-wallpaper.sh
 bash -n ghostty-wallpaper.sh
 ./ghostty-wallpaper.sh --help
 tmp_plist="$(mktemp -t ghostty-wallpaper.plist)" && \
